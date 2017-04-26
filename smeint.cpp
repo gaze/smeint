@@ -46,28 +46,37 @@ std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> SMESolver::Run(Eigen::MatrixXd rho
     std::mt19937 gen(rd());
     std::normal_distribution<> d;
 
+    double rtdt = sqrt(dt);
+
     unsigned long M = measurement.size();
 
     // Domain checks
-    if(hamiltonian.rows() != hamiltonian.cols()) throw new std::domain_error("Hamiltonian not square");
+    if(hamiltonian.rows() != hamiltonian.cols()){
+        std::cout<<"Hamiltonian not square"<<std::endl;
+        throw new std::domain_error("Hamiltonian not square");
+    }
     long D = hamiltonian.rows();
 
-    if(rho0.rows() != D || rho0.cols() != D) throw new std::domain_error("rho0 shape doesn't match system dimension");
+    if(rho0.rows() != D || rho0.cols() != D){
+        std::cout<<"rho0"<<std::endl;
+        throw new std::domain_error("rho0 shape doesn't match system dimension");
+    }
 
     for( auto &v : collapse )
-        if(v.rows() != D || v.cols() != D)
+        if(v.rows() != D || v.cols() != D) {
+            std::cout<<"collapse ops"<<std::endl;
             throw new std::domain_error("Collapse operator has wrong dimension");
+        }
 
     for( auto &l : measurement )
-        if(l.rows() != D || l.cols() != D)
+        if(l.rows() != D || l.cols() != D) {
+            std::cout<<"msmt ops"<<std::endl;
             throw new std::domain_error("Measurement operator has wrong dimension");
-
-    Eigen::MatrixXd dW = Eigen::MatrixXd::Zero(N, M);
+        }
 
     Eigen::MatrixXcd dy(N,M);
     Eigen::MatrixXcd rhos(N,D*D);
-
-    auto rho = rho0;
+    Eigen::MatrixXcd rho(rho0);
 
     // Deterministic part of the evolution
     Eigen::MatrixXcd mdet = std::complex<double>{0.0,1.0} * hamiltonian;
@@ -79,17 +88,15 @@ std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> SMESolver::Run(Eigen::MatrixXd rho
         // Measurement record
         for(int r=0;r<M;r++) {
             std::complex<double> a = (measurement[r] * rho + rho * (measurement[r].adjoint())).trace();
-            dy(i,r) = sqrt(etas[r]) * a + d(gen);
+            dy(i,r) = sqrt(etas[r]) * a * dt + d(gen)*rtdt;
         }
 
-        Eigen::MatrixXcd m = Eigen::MatrixXcd::Identity(D,D);
-
-        m -= mdet*dt;
+        Eigen::MatrixXcd m = Eigen::MatrixXcd::Identity(D,D) - mdet*dt;
 
         for(int r=0;r<M;r++){
             m += (sqrt(etas[r])*dy(i,r))*measurement[r];
 
-            for(int s=0;r<M;r++){
+            for(int s=0;s<M;s++){
                 std::complex<double> f = dy(i,r)*dy(i,s);
                 if(r == s) f -= dt;
 
@@ -98,16 +105,17 @@ std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> SMESolver::Run(Eigen::MatrixXd rho
         }
 
         Eigen::MatrixXcd rhonext = m*rho*m.adjoint();
-        for( auto &v : collapse ) rhonext += v*rho*v.adjoint();
+        for( auto &v : collapse ) rhonext += v*rho*v.adjoint()*dt;
 
         for(int j=0;j<measurement.size();j++)
-            rhonext += (1-etas[j])*measurement[j]*rho*measurement[j].adjoint();
+            rhonext += (1-etas[j])*measurement[j]*rho*measurement[j].adjoint()*dt;
 
         rhonext /= rhonext.trace();
 
         Eigen::Map<Eigen::RowVectorXcd> rhocol(rhonext.data(),rhonext.size());
 
         rhos.row(i) = rhocol;
+        rho = rhonext;
     }
 
     return std::tie(dy,rhos);
