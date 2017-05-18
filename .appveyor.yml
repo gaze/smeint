@@ -41,10 +41,10 @@ install:
       $env:PATH = "C:\Miniconda$env:CONDA\;C:\Miniconda$env:CONDA\Scripts\;$env:PATH"
       conda install -y -q pytest numpy scipy
     }
+
 build_script:
 - python setup.py sdist bdist bdist_wheel
-- set MSBuildLogger="C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-- cmake --build . --config Release  -- /v:m /logger:%MSBuildLogger%
+
 on_failure: if exist "tests\test_cmake_build" type tests\test_cmake_build\*.log
 
 artifacts:

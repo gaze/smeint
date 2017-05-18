@@ -22,7 +22,7 @@ class get_pybind_include(object):
 
 ext_modules = [
     Extension(
-        'python_example',
+        'smeint',
         ['smeint.cpp'],
         include_dirs=[
             'pybind11/include',
