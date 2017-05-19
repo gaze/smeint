@@ -12,36 +12,79 @@
 
 namespace py = pybind11;
 
+#if 0
+typedef std::complex<double> dtype;
+typedef Eigen::SparseMatrix<dtype> SpMat;
+typedef Eigen::MatrixXcd DMat;
+#else
+typedef double dtype;
+typedef Eigen::SparseMatrix<dtype> SpMat;
+typedef Eigen::MatrixXd DMat;
+typedef Eigen::RowVectorXd RVec;
+#endif
+
 struct SMESolver {
     SMESolver(
-            Eigen::MatrixXcd hamiltonian
+            SpMat hamiltonian
     ) : hamiltonian(hamiltonian) {}
 
-    Eigen::MatrixXcd hamiltonian;
-    Eigen::MatrixXcd rho0;
+    enum TermCond {
+        kGreaterThanOrEqualTo,
+        kLessThan,
+        kStepLimitReached
+    };
 
-    std::vector<Eigen::MatrixXcd> collapse;
+    SpMat hamiltonian;
+    DMat rho0;
+
+    std::vector<SpMat> collapse;
 
     // Observed operator and the efficiency it comes in with
-    std::vector<Eigen::MatrixXcd> measurement;
+    std::vector<SpMat> measurement;
     std::vector<double> etas;
 
-    void AddCollapse(Eigen::MatrixXcd op);
-    void AddMeasurement(Eigen::MatrixXcd op, double eta);
+    // All expectation values of interest
+    std::vector<SpMat> ev_ops;
 
-    std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> Run(Eigen::MatrixXd rho0, int N, double dt);
+    // Key from names of expectation values to their index
+    std::unordered_map<std::string, int> ev_names;
+
+    // Termination condition (expval index, condition, value)
+    std::vector<std::tuple<int, TermCond, dtype>> term_conds;
+
+    void AddCollapse(SpMat op);
+    void AddMeasurement(SpMat op, double eta);
+
+    void AddExpectationValue(std::string name, SpMat op);
+    void AddTerminationCondition(std::string name, TermCond tc, dtype value);
+
+    std::tuple<DMat,DMat> Run(DMat rho0, int N, double dt);
 };
 
-void SMESolver::AddCollapse(Eigen::MatrixXcd op){
+void SMESolver::AddExpectationValue(std::string name, SpMat op){
+    ev_ops.push_back(op);
+    ev_names[name] = ev_ops.size() - 1;
+}
+
+void SMESolver::AddTerminationCondition(
+        std::string name,
+        SMESolver::TermCond tc,
+        dtype value){
+
+    int idx = ev_names[name];
+    term_conds.push_back(std::tie(idx, tc, value));
+}
+
+void SMESolver::AddCollapse(SpMat op){
     collapse.push_back(op);
 }
 
-void SMESolver::AddMeasurement(Eigen::MatrixXcd op, double eta){
+void SMESolver::AddMeasurement(SpMat op, double eta){
     measurement.push_back(op);
     etas.push_back(eta);
 }
 
-std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> SMESolver::Run(Eigen::MatrixXd rho0, int N, double dt){
+std::tuple<DMat,DMat> SMESolver::Run(DMat rho0, int N, double dt){
     std::random_device rd;
     std::mt19937 gen(rd());
     std::normal_distribution<> d;
@@ -59,60 +102,65 @@ std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> SMESolver::Run(Eigen::MatrixXd rho
 
     if(rho0.rows() != D || rho0.cols() != D){
         std::cout<<"rho0"<<std::endl;
-        throw new std::domain_error("rho0 shape doesn't match system dimension");
+        throw new
+           std::domain_error("rho0 shape doesn't match system dimension");
     }
 
     for( auto &v : collapse )
-        if(v.rows() != D || v.cols() != D) {
-            std::cout<<"collapse ops"<<std::endl;
-            throw new std::domain_error("Collapse operator has wrong dimension");
-        }
+    if(v.rows() != D || v.cols() != D) {
+        std::cout<<"collapse ops"<<std::endl;
+        throw new std::domain_error("Collapse operator has wrong dimension");
+    }
 
     for( auto &l : measurement )
-        if(l.rows() != D || l.cols() != D) {
-            std::cout<<"msmt ops"<<std::endl;
-            throw new std::domain_error("Measurement operator has wrong dimension");
-        }
+    if(l.rows() != D || l.cols() != D) {
+        std::cout<<"msmt ops"<<std::endl;
+        throw new
+            std::domain_error("Measurement operator has wrong dimension");
+    }
 
-    Eigen::MatrixXcd dy(N,M);
-    Eigen::MatrixXcd rhos(N,D*D);
-    Eigen::MatrixXcd rho(rho0);
+    DMat dy(N,M);
+    DMat rhos(N,D*D);
+    DMat rho(rho0);
 
     // Deterministic part of the evolution
-    Eigen::MatrixXcd mdet = std::complex<double>{0.0,1.0} * hamiltonian;
+    //    SpMat mdet = dtype{0.0,1.0} * hamiltonian;
+    SpMat mdet = 0.0 * hamiltonian;
     for( auto &v : collapse )    mdet += 0.5*v.adjoint()*v;
     for( auto &l : measurement ) mdet += 0.5*l.adjoint()*l;
 
     for(int i=0;i<N;i++){
-
         // Measurement record
         for(int r=0;r<M;r++) {
-            std::complex<double> a = (measurement[r] * rho + rho * (measurement[r].adjoint())).trace();
+            dtype a = (measurement[r] * rho \
+                    + rho * (measurement[r].adjoint())).trace();
+
             dy(i,r) = sqrt(etas[r]) * a * dt + d(gen)*rtdt;
         }
 
-        Eigen::MatrixXcd m = Eigen::MatrixXcd::Identity(D,D) - mdet*dt;
+        DMat m = DMat::Identity(D,D) - mdet*dt;
 
         for(int r=0;r<M;r++){
             m += (sqrt(etas[r])*dy(i,r))*measurement[r];
 
             for(int s=0;s<M;s++){
-                std::complex<double> f = dy(i,r)*dy(i,s);
+                dtype f = dy(i,r)*dy(i,s);
                 if(r == s) f -= dt;
 
                 m += 0.5*sqrt(etas[r]*etas[s])*measurement[r]*measurement[s]*f;
             }
         }
 
-        Eigen::MatrixXcd rhonext = m*rho*m.adjoint();
+        DMat rhonext = m*rho*m.adjoint();
         for( auto &v : collapse ) rhonext += v*rho*v.adjoint()*dt;
 
         for(int j=0;j<measurement.size();j++)
-            rhonext += (1-etas[j])*measurement[j]*rho*measurement[j].adjoint()*dt;
+            rhonext += \
+                (1-etas[j])*measurement[j]*rho*measurement[j].adjoint()*dt;
 
         rhonext /= rhonext.trace();
 
-        Eigen::Map<Eigen::RowVectorXcd> rhocol(rhonext.data(),rhonext.size());
+        Eigen::Map<RVec> rhocol(rhonext.data(),rhonext.size());
 
         rhos.row(i) = rhocol;
         rho = rhonext;
@@ -121,19 +169,21 @@ std::tuple<Eigen::MatrixXcd,Eigen::MatrixXcd> SMESolver::Run(Eigen::MatrixXd rho
     return std::tie(dy,rhos);
 }
 
-int main() {
-    std::cout << "Hello, World!" << std::endl;
-    return 0;
-}
-
 PYBIND11_PLUGIN(smeint) {
     py::module m("smeint", "SME Solver");
 
-    py::class_<SMESolver>(m, "Solver")
-            .def(py::init<Eigen::MatrixXcd>())
-            .def("add_collapse", &SMESolver::AddCollapse)
-            .def("add_measurement", &SMESolver::AddMeasurement)
-            .def("run", &SMESolver::Run);
+    py::class_<SMESolver> solver(m, "Solver");
+
+    solver.def(py::init<SpMat>())
+          .def("add_collapse",              &SMESolver::AddCollapse)
+          .def("add_measurement",           &SMESolver::AddMeasurement)
+          .def("add_expectation_value",     &SMESolver::AddExpectationValue)
+          .def("add_termination_condition", &SMESolver::AddTerminationCondition)
+          .def("run",                       &SMESolver::Run);
+
+    py::enum_<SMESolver::TermCond>(solver, "TermCond")
+        .value("LessThan",          SMESolver::TermCond::kLessThan)
+        .value("LessThanOrEqualTo", SMESolver::TermCond::kGreaterThanOrEqualTo);
 
     return m.ptr();
 }
